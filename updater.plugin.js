@@ -51,7 +51,7 @@ module.exports = class Denkai {
         }
 
         if (this.request) {
-            this.request.destroy();
+            this.request.absort();
             this.request = null;
         }
 
@@ -61,73 +61,38 @@ module.exports = class Denkai {
     getPluginPath() {
         return path.join(
             BdApi.Plugins.folder,
-            "Denka.plugin.js"
+            __filename
         );
     }
 
-    download(url) {
-        return new Promise((resolve, reject) => {
-            const request = https.get(
-                url,
-                {
-                    headers: {
-                        "User-Agent": "Denkai-Updater",
-                        "Cache-Control": "no-cache"
-                    },
-                    timeout: 15000
-                },
-                (response) => {
-                    if (response.statusCode !== 200) {
-                        response.resume();
+    async download(url) {
+        const controller = new AbortController();
+        this.controller = controller;
 
-                        reject(
-                            new Error(
-                                `HTTP ${response.statusCode}`
-                            )
-                        );
-                        return;
-                    }
-
-                    const chunks = [];
-                    let size = 0;
-
-                    response.on("data", (chunk) => {
-                        size += chunk.length;
-
-                        if (size > 5 * 1024 * 1024) {
-                            response.destroy(
-                                new Error("File too large")
-                            );
-                            return;
-                        }
-
-                        chunks.push(chunk);
-                    });
-
-                    response.on("end", () => {
-                        resolve(Buffer.concat(chunks));
-                    });
-
-                    response.on("error", reject);
+        try {
+            const response = await BdApi.Net.fetch(url, {
+                method: "GET",
+                signal: controller.signal,
+                headers: {
+                    "Cache-Control": "no-cache"
                 }
-            );
+            });
 
-            this.request = request;
+            console.log("[Denkai] HTTP Status:", response.status);
 
-            request.on("timeout", () => {
-                request.destroy(
-                    new Error("Request timeout")
+            if (!response.ok) {
+                throw new Error(
+                    `GitHub HTTP ${response.status} ${response.statusText}`
                 );
-            });
+            }
 
-            request.on("error", reject);
-
-            request.on("close", () => {
-                if (this.request === request) {
-                    this.request = null;
-                }
-            });
-        });
+            const data = await response.arrayBuffer();
+            return Buffer.from(data);
+        } finally {
+            if (this.controller === controller) {
+                this.controller = null;
+            }
+        }
     }
 
     async checkForUpdates() {
@@ -154,30 +119,24 @@ module.exports = class Denkai {
 
             const local = fs.readFileSync(filePath);
 
-            // 정확하게 동일하면 아무 작업도 하지 않음
-            if (remote.equals(local)) {
+            const isSame =
+                remote.length === local.length &&
+                remote.every((byte, index) => byte === local[index]);
+
+            if (isSame) {
+                console.log("[Denkai] Already up to date.");
                 return;
             }
 
             const source = remote.toString("utf8");
 
-            // 기본적인 BetterDiscord 플러그인 형식 확인
             if (
-                !source.includes("@name denkai") ||
-                !source.includes("module.exports") ||
-                !source.includes("checkForUpdates")
+                !source.includes("@name Denkai")
             ) {
                 throw new Error(
                     "Invalid Denkai plugin source"
                 );
             }
-
-            // JavaScript 구문 검증
-            const vm = require("vm");
-
-            new vm.Script(source, {
-                filename: "denkai.plugin.js"
-            });
 
             if (this.stopped) {
                 return;
@@ -189,7 +148,6 @@ module.exports = class Denkai {
                 "[Denkai] New version detected."
             );
 
-            // 기존 코드 백업
             fs.writeFileSync(
                 filePath + ".backup",
                 local
@@ -206,13 +164,11 @@ module.exports = class Denkai {
             );
 
             BdApi.UI.showToast(
-                "Denkai 업데이트 완료. 재시작합니다.",
-                {
+                "Denkai 업데이트 완료. 재시작합니다.", {
                     type: "success"
                 }
             );
 
-            // 재로드 대기 중에는 추가 검사하지 않음
             this.reloadTimer = setTimeout(() => {
                 if (this.stopped) return;
 
